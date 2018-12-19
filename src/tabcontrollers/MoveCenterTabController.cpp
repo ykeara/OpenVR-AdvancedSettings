@@ -1,6 +1,7 @@
 #include "MoveCenterTabController.h"
 #include <QQuickWindow>
 #include "../overlaycontroller.h"
+#include "../utils/Matrix.h"
 
 void rotateCoordinates(float coordinates[3], float angle) {
 	if (angle == 0) {
@@ -29,6 +30,10 @@ void MoveCenterTabController::initStage1() {
 	if (value.isValid() && !value.isNull()) {
 		m_adjustChaperone = value.toBool();
 	}
+    value = settings->value("rotateHand", m_rotateHand);
+    if (value.isValid() && !value.isNull()) {
+        m_rotateHand = value.toBool();
+    }
 	value = settings->value("moveShortcutRight", m_moveShortcutRightEnabled);
 	if (value.isValid() && !value.isNull()) {
 		m_moveShortcutRightEnabled = value.toBool();
@@ -61,7 +66,6 @@ void MoveCenterTabController::initStage2(OverlayController * parent, QQuickWindo
 	this->parent = parent;
 	this->widget = widget;
 }
-
 
 int MoveCenterTabController::trackingUniverse() const {
 	return (int)m_trackingUniverse;
@@ -111,23 +115,90 @@ int MoveCenterTabController::rotation() const {
 	return m_rotation;
 }
 
+int MoveCenterTabController::tempRotation() const {
+    return m_tempRotation;
+}
+
 void MoveCenterTabController::setRotation(int value, bool notify) {
 	if (m_rotation != value) {
-		//float angle = (value - m_rotation) * 2 * M_PI / 360.0;
-		//parent->RotateUniverseCenter((vr::TrackingUniverseOrigin)m_trackingUniverse, angle, m_adjustChaperone);
-		m_rotation = value;
-		 if (notify) {
+		float angle = (value - m_rotation) * 2 * M_PI / 360.0;
+
+        // Revert now because we don't commit in RotateUniverseCenter and AddOffsetToUniverseCenter.
+        // We do this so rotation and offset can happen in one go, avoiding positional judder.
+        vr::VRChaperoneSetup()->RevertWorkingCopy();
+
+        // Get hmd pose matrix.
+        vr::TrackedDevicePose_t devicePosesForRot[vr::k_unMaxTrackedDeviceCount];
+        vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, 0.0f, devicePosesForRot, vr::k_unMaxTrackedDeviceCount);
+        vr::HmdMatrix34_t oldHmdPos = devicePosesForRot[0].mDeviceToAbsoluteTracking;
+
+        // Set up xyz coordinate values from pose matrix.
+        float oldHmdXyz[3] = {
+            oldHmdPos.m[0][3],
+            oldHmdPos.m[1][3],
+            oldHmdPos.m[2][3]
+        };
+        float newHmdXyz[3] = {
+            oldHmdPos.m[0][3],
+            oldHmdPos.m[1][3],
+            oldHmdPos.m[2][3]
+        };
+
+        // Convert oldHmdXyz into un-rotated coordinates.
+        float oldAngle = -m_rotation * 2 * M_PI / 360.0;
+        rotateCoordinates(oldHmdXyz, oldAngle);
+
+        // Set newHmdXyz to have additional rotation from incoming angle change.
+        rotateCoordinates(newHmdXyz, oldAngle - angle);
+
+        // find difference in x,z offset due to incoming angle change (coordinates are in un-rotated axis).
+        float hmdRotDiff[3] = {
+            oldHmdXyz[0] - newHmdXyz[0],
+            0,
+            oldHmdXyz[2] - newHmdXyz[2]
+        };
+
+        // Rotate the tracking univese center without committing.
+        parent->RotateUniverseCenter((vr::TrackingUniverseOrigin)m_trackingUniverse, angle, m_adjustChaperone, false);
+
+        m_rotation = value;
+		if (notify) {
 			emit rotationChanged(m_rotation);
 		}
+
+        // Get rotated offset to apply to universe center.
+        // We use rotated coordinates here because we have already applied RotateUniverseCenter.
+        // This will be the final offset ready to apply, so it must match the current universe axis rotation.
+        float finalAngle = m_rotation * 2 * M_PI / 360.0;
+        float finalHmdRotDiff[3] = {
+            hmdRotDiff[0],
+            0,
+            hmdRotDiff[2]
+        };
+        rotateCoordinates(finalHmdRotDiff, finalAngle);
+
+        // Apply the offset (in rotated coordinates) without commit.
+        // We still can't commit yet because it would call vr::VRChaperoneSetup()->RevertWorkingCopy() and we'd lose our uncommitted RotateUniverseCenter.
+        parent->AddOffsetToUniverseCenter((vr::TrackingUniverseOrigin)m_trackingUniverse, finalHmdRotDiff, m_adjustChaperone, false);
+
+        // Commit here because we didn't in RotateUniverseCenter and AddOffsetToUniverseCenter to combine into one go.
+        vr::VRChaperoneSetup()->CommitWorkingCopy(vr::EChaperoneConfigFile_Live);
+
+        // Update UI offsets.
+        m_offsetX += hmdRotDiff[0];
+        m_offsetZ += hmdRotDiff[2];
+        if (notify) {
+            emit offsetXChanged(m_offsetX);
+            emit offsetZChanged(m_offsetZ);
+        }
 	}
 }
 
-void MoveCenterTabController::applyRotation() {
-	if (m_rotation != m_rotationOld) {
-		float angle = (m_rotationOld - m_rotation) * 2 * M_PI / 360.0;
-		parent->RotateUniverseCenter((vr::TrackingUniverseOrigin)m_trackingUniverse, angle, m_adjustChaperone);
-		m_rotationOld = m_rotation;
-	}
+void MoveCenterTabController::setTempRotation(int value, bool notify) {
+    m_tempRotation = value;
+    if (notify) {
+        emit tempRotationChanged(m_tempRotation);
+    }
 }
 
 bool MoveCenterTabController::adjustChaperone() const {
@@ -160,6 +231,21 @@ void MoveCenterTabController::setAdjustChaperone(bool value, bool notify) {
 	}
 }
 
+bool MoveCenterTabController::rotateHand() const {
+    return m_rotateHand;
+}
+
+void MoveCenterTabController::setRotateHand(bool value, bool notify){
+    m_rotateHand = value;
+    auto settings = OverlayController::appSettings();
+    settings->beginGroup("playspaceSettings");
+    settings->setValue("rotateHand", m_rotateHand);
+    settings->endGroup();
+    settings->sync();
+    if (notify) {
+        emit rotateHandChanged(m_rotateHand);
+    }
+}
 
 bool MoveCenterTabController::moveShortcutRight() const {
 	return m_moveShortcutRightEnabled;
@@ -391,6 +477,12 @@ void MoveCenterTabController::eventLoopTick(vr::ETrackingUniverseOrigin universe
 			emit offsetXChanged(m_offsetX);
 			emit offsetYChanged(m_offsetY);
             emit offsetZChanged(m_offsetZ);
+
+            // Set lastHandYaw to placeholder value for invalid (-10.0) when we release move shortcut.
+            if (m_rotateHand) {
+                lastHandYaw = -10.0;
+            }
+
 			return;
 		}
 		auto handId = vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(newMoveHand);
@@ -399,6 +491,11 @@ void MoveCenterTabController::eventLoopTick(vr::ETrackingUniverseOrigin universe
 				emit offsetXChanged(m_offsetX);
 				emit offsetYChanged(m_offsetY);
                 emit offsetZChanged(m_offsetZ);
+
+                if (m_rotateHand) {
+                    lastHandYaw = -10.0;
+                }
+
 			}
 			return;
 		}
@@ -419,6 +516,26 @@ void MoveCenterTabController::eventLoopTick(vr::ETrackingUniverseOrigin universe
 			relativeControllerPosition[1] + m_offsetY,
 			relativeControllerPosition[2] + m_offsetZ,
         };
+
+        // Get hand's rotation.
+        double handYaw;
+        if (m_rotateHand) {
+
+            // handMatrix is in rotated coordinates.
+            vr::HmdMatrix34_t handMatrix = pose->mDeviceToAbsoluteTracking;
+
+            // We need un-rotated coordinates for valid comparison with between handYaw and lastHandYaw.
+            // Set up (un)rotation matrix.
+            vr::HmdMatrix34_t handMatrixRotMat;
+            vr::HmdMatrix34_t handMatrixAbsolute;
+            utils::initRotationMatrix(handMatrixRotMat, 1, angle);
+
+            // Get handMatrixAbsolute in un-rotated coordinates.
+            utils::matMul33(handMatrixAbsolute, handMatrixRotMat, handMatrix);
+
+            // Convert pose matrix to yaw.
+            handYaw = std::atan2(handMatrixAbsolute.m[0][2], handMatrixAbsolute.m[2][2]);
+        }
 
 		if (oldMoveHand == newMoveHand) {
 
@@ -455,11 +572,41 @@ void MoveCenterTabController::eventLoopTick(vr::ETrackingUniverseOrigin universe
 				diff[2] = 0;
 			}
 
+            // Check if diff is anything before comitting.
+            if (diff[0] != 0 || diff[1] != 0 || diff[2] != 0) {
 			parent->AddOffsetToUniverseCenter((vr::TrackingUniverseOrigin)m_trackingUniverse, diff, m_adjustChaperone);
+            }
+
+            // Get rotation change of hand.
+            if (m_rotateHand) {
+
+                // Checking if set to -10.0 placeholder for invalid hand.
+                if (lastHandYaw < -9.0) {
+                    lastHandYaw = handYaw;
+                }
+
+                else {
+                    double handYawDiff = handYaw - lastHandYaw;
+
+                    // TODO: Increase angular granularity beyond 1 degree.
+                    int newRotationAngleDeg = round(handYawDiff * 180.0 / M_PI) + m_rotation;
+
+                    // Keep angle within -180 ~ 180
+                    if (newRotationAngleDeg > 180){
+                        newRotationAngleDeg -= 360;
+                    } else if (newRotationAngleDeg < -180){
+                        newRotationAngleDeg += 360;
+                    }
+
+                    setRotation(newRotationAngleDeg);
+
+                }
+            }
         }
 		m_lastControllerPosition[0] = absoluteControllerPosition[0];
 		m_lastControllerPosition[1] = absoluteControllerPosition[1];
 		m_lastControllerPosition[2] = absoluteControllerPosition[2];
+        lastHandYaw = handYaw;
 	}
 }
 

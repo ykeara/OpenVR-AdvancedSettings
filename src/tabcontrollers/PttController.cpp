@@ -162,7 +162,8 @@ namespace advsettings {
       }
       if (config->triggerMode) {
         if (state.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)
-            || state.ulButtonTouched & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) {
+            // Removed to improve trigger feel:  || state.ulButtonTouched & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)
+                ) {
           return true;
         }
       }
