@@ -65,7 +65,7 @@ Adds an overlay to the OpenVR dashboard that allows access to advanced settings.
 <a name="installer"></a>
 ## Installer
 
-Download the newest installer from the [release section](https://github.com/OpenVR-Advanced-Settings/OpenVR-AdvancedSettings/releases) and execute it.
+Download the newest installer from the [release section](https://github.com/ykeara/OpenVR-AdvancedSettings/releases) and execute it.
 
 If you have an older standalone version installed, delete the old application folder first.
 
@@ -73,7 +73,7 @@ If you have an older standalone version installed, delete the old application fo
 ## Standalone
 I am not currently providing standalone Archives if you want a standalone version you can:
 
-Download the newest standalone archive from the [release section](https://github.com/OpenVR-Advanced-Settings/OpenVR-AdvancedSettings/releases)and unpack the archive.
+Download the newest standalone archive from the [release section](https://github.com/ykeara/OpenVR-AdvancedSettings/releases) and unpack the archive.
 
 To install for the first time simply start AdvancedSettings.exe once while SteamVR is running. It will register with SteamVR and automatically starts whenever SteamVR starts (Can be disabled in the settings).
 
